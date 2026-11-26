@@ -171,7 +171,7 @@ class Platform:
     def scrcpy_identity(self):
         record = self.config.settings.get("scrcpy", {})
         exe = Path(record.get("path", ""))
-        server = exe.parent / "scrcpy-server"
+        server = Path(record["server_path"]) if record.get("server_path") else exe.parent / "scrcpy-server"
         files = [exe, server]
         if not all(p.is_file() for p in files):
             raise LabError("missing_scrcpy", f"Configure the official scrcpy {SCRCPY_VERSION} Windows release")
@@ -180,7 +180,8 @@ class Platform:
         version = run([exe, "--version"], cwd=exe.parent)
         if not re.search(rf"(?m)^scrcpy {re.escape(SCRCPY_VERSION)}(?:\s|$)", version):
             raise LabError("wrong_scrcpy", "Unsupported scrcpy version")
-        return {"version": SCRCPY_VERSION, "client": record["client_sha256"], "server": record["server_sha256"]}
+        return {"version": SCRCPY_VERSION, "client": record["client_sha256"], "server": record["server_sha256"],
+                "profile": record.get("profile", "stock")}
 
     def identity(self, device, mode):
         api = self.prop(device, "ro.build.version.sdk")
@@ -287,6 +288,8 @@ class Platform:
         exe = Path(self.config.settings["scrcpy"]["path"])
         env = self.config.tool_env | {"ADB": str(self.config.executable("platform-tools", "adb"))}
         env.pop("SCRCPY_SERVER_PATH", None)
+        if self.config.settings["scrcpy"].get("server_path"):
+            env["SCRCPY_SERVER_PATH"] = self.config.settings["scrcpy"]["server_path"]
         output = directory / ("display.mkv" if recording else "private-display.mkv")
         args = [exe, "--serial", dev["serial"], "--new-display=540x960/180", "--no-window", "--no-audio",
                 "--no-control", "--no-power-on", "--no-clipboard-autosync", "--no-vd-system-decorations",

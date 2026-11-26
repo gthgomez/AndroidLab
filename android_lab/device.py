@@ -19,10 +19,10 @@ def resumed_packages(text):
             for i, m in enumerate(matches)}
 
 
-def display_identity(text, display_id):
+def display_identity(text, display_id, name="scrcpy"):
     identities = set()
     for line in text.splitlines():
-        if "DisplayInfo{" not in line or "scrcpy" not in line.lower():
+        if "DisplayInfo{" not in line or name not in line.lower():
             continue
         if not re.search(rf"\bdisplayId[ =]+{display_id}(?:[ ,}}]|$)", line):
             continue
@@ -183,7 +183,7 @@ class DeviceSession:
             record = self.data.get("secondary", {})
             if (self.display <= 0 or not record.get("identity") or not record.get("process")
                     or process_identity(record["pid"]) != record["process"]
-                    or display_identity(self.layout(), self.display) != record["identity"]):
+                    or display_identity(self.layout(), self.display, record.get("name", "scrcpy")) != record["identity"]):
                 raise LabError("display_lost", "Secondary display identity changed", uncertain=True)
 
     def placement(self):

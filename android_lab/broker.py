@@ -474,7 +474,7 @@ class Broker:
                 raise LabError("no_reports", "No session evidence is available")
             session = rows[0]["id"]
         row = self.state.get(session)
-        fields = ("project", "revision", "suite", "plan", "artifact", "test_artifact", "execution",
+        fields = ("project", "revision", "suite", "plan", "backend", "artifact", "test_artifact", "execution",
                   "functional", "safety", "evidence", "cleanup", "error")
         data = row["data"]
         return {"session": session, "state": row["status"], "expires": row["expires"],

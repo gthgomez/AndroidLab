@@ -17,14 +17,15 @@ def read_events(file):
     return [json.loads(line) for line in data.decode("utf-8").splitlines()]
 
 
-def evaluate(events, other, marker, display, expected_primary=None, expected_automation=None):
+def evaluate(events, other, marker, display, expected_primary=None, expected_automation=None, *,
+             fresh_operator_launch=False):
     if not isinstance(marker, str) or not MARKER.fullmatch(marker) or marker == "UNSET":
         raise ValueError("Supply a unique nondefault fixture marker.")
     if type(display) is not int or display < 1:
         raise ValueError("A distinct secondary display is required.")
 
-    def select(rows, expected_display):
-        result = [row for row in rows if isinstance(row, dict) and row.get("marker") == marker]
+    def select(rows, expected_display, expected_marker):
+        result = [row for row in rows if isinstance(row, dict) and row.get("marker") == expected_marker]
         valid = all(type(row.get("display")) is int and row["display"] == expected_display
                     and type(row.get("uptime_ms")) is int and row["uptime_ms"] >= 0
                     and isinstance(row.get("event"), str) for row in result)
@@ -33,8 +34,8 @@ def evaluate(events, other, marker, display, expected_primary=None, expected_aut
         times = [row["uptime_ms"] for row in result]
         return result, bool(result) and times == sorted(times)
 
-    primary, primary_placed = select(events, 0)
-    secondary, secondary_placed = select(other, display)
+    primary, primary_placed = select(events, 0, "UNSET" if fresh_operator_launch else marker)
+    secondary, secondary_placed = select(other, display, marker)
     checks = {
         "primary_identity": primary_placed,
         "automation_identity": secondary_placed,

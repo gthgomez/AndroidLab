@@ -6,6 +6,18 @@ Use the same paired fixtures, marker, firmware, transport, session dimensions an
 
 Rehearse placement and interleaved gestures on a disposable AVD first. Build the canaries, install pinned scrcpy, then run `python fixtures/rehearse.py --avd AVD_NAME`. The rehearsal records synthetic app events and cleanup. Its output describes the AVD only.
 
+To compare the two display backends on the same AVD, download `headroid-server.jar` from the [pinned Headroid release](https://github.com/anand-s-kale/headroid/releases/tag/v0.1.0a5) outside this checkout. Run the same command with `--headroid-jar PATH_TO_JAR`. The comparison checks the release artifact digest and uses the same two apps, gestures and assertions. Only the fixture runner can invoke Headroid, and it requires a session-owned AVD.
+
+The optional `scripts/Build-FocusScrcpy.ps1` builds the server from the checked scrcpy v5.0.1 source archive and adds Android's no-top-focus-stealing display flag. The stock client and server stay installed. Android Lab stores the selected server path and hash in local config. Run the rehearsal again to learn whether the firmware actually honors the flag.
+
+An owner who is present can run the touch-only supervised trial after a passing rehearsal of the exact APKs and focus-protected backend:
+
+```powershell
+python fixtures/live_canary.py --device DEVICE_ALIAS --rehearsal SESSION_ID --supervised
+```
+
+Open the synthetic primary canary manually on the phone when prompted. Tap Increment repeatedly while the check runs. The trial reads each fixture's own bounded event log, targets the secondary display, and removes the two fixture packages when complete. It leaves ordinary device enrollment disabled. Keyboard, sleep, disconnect and extended hardware qualification require their own evidence.
+
 ## Required observations
 
 | Check | Observable result |

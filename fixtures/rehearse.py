@@ -19,6 +19,7 @@ from android_lab.device import DeviceSession
 from android_lab.planner import choose
 from android_lab.platform import host_sample
 from evaluate import evaluate
+from headroid_rehearsal import SHA256, VERSION, close_display, create_display
 
 PACKAGES = {
     "primary": "com.androidlab.canary.primary.lab",
@@ -35,10 +36,13 @@ def observations(work, role):
     return [json.loads(line) for line in raw.splitlines()]
 
 
-def rehearse(avd_name):
+def rehearse(avd_name, headroid_jar=None):
     broker = Broker(Config.load())
     platform = broker.platform
-    platform.scrcpy_identity()
+    if headroid_jar is None:
+        backend = platform.scrcpy_identity()
+    else:
+        backend = {"name": "headroid", "version": VERSION, "server": SHA256}
     inventory, _ = broker.inventory()
     inventory = [d for d in inventory if d["kind"] == "avd" and d["name"] == avd_name]
     requested = {"kind": "device", "requires": ["launch", "placement", "tap", "swipe"],
@@ -48,13 +52,15 @@ def rehearse(avd_name):
         raise LabError("no_route", " | ".join(plan["reasons"]))
     avd = plan["device"]
     data = {"project": "paired-canary", "suite": "rehearse", "route": "managed_emulator", "required": [],
-            "plan": broker.describe_plan(plan), "execution": "started", "functional": "unverified",
+            "plan": broker.describe_plan(plan), "backend": backend, "execution": "started", "functional": "unverified",
             "safety": "emulator_only", "evidence": "partial", "cleanup": "pending"}
     session, _ = broker.state.acquire(avd["resources"], requested["timeout"], data)
     directory = broker.directory(session)
     directory.mkdir(parents=True, exist_ok=True)
     result = {"passed": False}
     marker = secrets.token_hex(12)
+    headroid = None
+    virtual = None
     with broker.state.operation(session):
         try:
             artifacts = {}
@@ -65,6 +71,8 @@ def rehearse(avd_name):
                 if artifact["package"] != package or artifact["permissions"] or artifact["instrumentation"]:
                     raise LabError("invalid_fixture", "Expected the permission-free synthetic canary")
                 artifacts[role] = artifact
+            data["fixture_hashes"] = {role: artifact["sha256"] for role, artifact in artifacts.items()}
+            broker.state.update(session, data)
             device = broker.boot_avd(session, avd, data, directory)
             data.update(device=device, boot=platform.boot_identity(device), display=0, artifact=artifacts["primary"])
             work = DeviceSession(platform, broker.state, session, data, directory)
@@ -80,7 +88,10 @@ def rehearse(avd_name):
             work.shell(*primary_tap, timeout=12)
             work.install(artifacts["automation"], paths["automation"])
             virtual = DeviceSession(platform, broker.state, session, data, directory, rehearsal=True)
-            virtual.start_secondary(180)
+            if headroid_jar is not None:
+                headroid = create_display(virtual, headroid_jar)
+            else:
+                virtual.start_secondary(180)
             data["artifact"] = artifacts["automation"]
             virtual.launch(marker=marker)
             virtual.action({"op": "tap", "x": 250, "y": 375})
@@ -98,6 +109,11 @@ def rehearse(avd_name):
         except (OSError, ValueError) as err:
             broker.record_error(session, data, LabError("rehearsal_error", type(err).__name__, uncertain=True))
         finally:
+            if headroid:
+                try:
+                    close_display(virtual, *headroid)
+                except LabError as err:
+                    broker.state.event(session, "comparison_cleanup", error=err.code)
             broker.state.update(session, data)
             broker.cleanup_locked(session, data)
     report = broker.report(session)
@@ -109,9 +125,10 @@ def rehearse(avd_name):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--avd", required=True, help="The AVD to provision exclusively for this rehearsal")
+    parser.add_argument("--headroid-jar", type=Path, help="Use the pinned Headroid comparison server")
     args = parser.parse_args()
     try:
-        report = rehearse(args.avd)
+        report = rehearse(args.avd, args.headroid_jar)
     except LabError as err:
         print(json.dumps({"error": err.code, "message": str(err)}))
         return 2

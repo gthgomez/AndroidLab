@@ -21,9 +21,12 @@ These dispositions come from inspection of upstream documentation, selected sour
 | [Mobilewright](https://github.com/mobile-next/mobilewright) | Apache-2.0. Optional isolated suite adapter candidate. Current mobilecli transport leaves device policy to its backend. |
 | [ShadowAuto](https://github.com/android-notes/ShadowAuto) | Apache-2.0. ImageReader and hidden display flags inform fixture cases; fallback flags can weaken focus isolation. |
 | [Headless Android](https://github.com/HakaI963/headless-android) | Apache-2.0. Candidate for a like-for-like dedicated-device trial. Shizuku and optional APK repackaging add enrollment and signature changes. |
+| [Headroid v0.1.0a5](https://github.com/anand-s-kale/headroid/releases/tag/v0.1.0a5) | Apache-2.0. A narrowly used emulator comparison backend. It requests Android's no-top-focus-stealing flag and captures through ImageReader. Its broader shell-UID RPC and AppOps recovery require separate review before personal-device use. |
 | [Droidance](https://github.com/ybblab/Droidance) | Apache-2.0. Installed-app data access and reported focus loss on some Android versions conflict with the personal-device contract. |
 | [Shizuku](https://github.com/RikkaApps/Shizuku) | Apache-2.0. Defer. Additional privileged on-device service and enrollment are unnecessary for the existing Windows SDK. |
 
 The handoff from scrcpy display creation to Android activity placement is verified independently. [Virtual-display behavior](https://github.com/Genymobile/scrcpy/blob/v5.0.1/doc/virtual-display.md) · [App launch restrictions](https://developer.android.com/reference/android/app/ActivityOptions#setLaunchDisplayId(int))
 
 The launcher uses bundled Windows runtime libraries in the externally downloaded scrcpy archive. Review its included notices and upstream licenses. The application runtime itself uses Python's standard library and SQLite. The fixture uses Java and standard Android APIs.
+
+Upstream's Headroid trial isolated focus and typing on one Xiaomi firmware with a patched scrcpy server. It reported keyboard latency and left other scenarios open. That evidence motivates our comparison and does not qualify another firmware. [Upstream trial](https://github.com/anand-s-kale/headroid/blob/v0.1.0a5/docs/m0/RESULTS.md)
