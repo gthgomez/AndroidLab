@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.local/
+build/
+dist/
+.gradle/
+local.properties
+*.apk
+*.aab
+*.jks
+*.keystore
+*.pem
+*.sqlite*
+/android-lab.local.json

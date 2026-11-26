@@ -1,0 +1,50 @@
+{
+  "suites": {
+    "ui": {
+      "kind": "device",
+      "prebuilt": true,
+      "apk": "build/automation.apk",
+      "min_sdk": 26,
+      "timeout": 540,
+      "steps": [
+        {"op": "assert_display"},
+        {"op": "assert_text", "text": "ANDROID LAB AUTOMATION CANARY"},
+        {"op": "assert_text", "text": "Count: 0"},
+        {"op": "tap", "text": "Increment"},
+        {"op": "assert_text", "text": "Count: 1"},
+        {"op": "relaunch"},
+        {"op": "assert_text", "text": "Count: 1"},
+        {"op": "screenshot"}
+      ]
+    },
+    "primary-canary": {
+      "kind": "device",
+      "prebuilt": true,
+      "apk": "build/primary.apk",
+      "min_sdk": 26,
+      "timeout": 540,
+      "steps": [
+        {"op": "assert_display"},
+        {"op": "assert_text", "text": "ANDROID LAB PRIMARY CANARY"}
+      ]
+    },
+    "instrumentation": {
+      "kind": "device",
+      "prebuilt": true,
+      "apk": "build/automation.apk",
+      "test_apk": "build/instrumentation.apk",
+      "min_sdk": 26
+    },
+    "negative": {
+      "kind": "device",
+      "prebuilt": true,
+      "apk": "build/automation.apk",
+      "min_sdk": 26,
+      "timeout": 540,
+      "steps": [
+        {"op": "assert_display"},
+        {"op": "assert_text", "text": "Count: 999"}
+      ]
+    }
+  }
+}

@@ -1,0 +1,16 @@
+[project]
+name = "android-lab"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "Capability-aware Android test runner and local device broker"
+license = {text = "Apache-2.0"}
+
+[project.scripts]
+android-lab = "android_lab.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["android_lab"]

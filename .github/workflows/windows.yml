@@ -1,0 +1,26 @@
+name: Windows verification
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065b
+        with:
+          python-version: '3.10'
+      - name: Regression and public-source scan
+        shell: pwsh
+        run: .\scripts\Test-Release.ps1
+      - name: Clean installer and MCP smoke
+        shell: pwsh
+        run: |
+          $env:ANDROID_LAB_HOME = Join-Path $env:RUNNER_TEMP 'android-lab-clean'
+          .\scripts\Install-AndroidLab.ps1 -InstallRoot "$env:ANDROID_LAB_HOME/runtime" -NoPath
+          & "$env:ANDROID_LAB_HOME/runtime/android-lab.cmd" doctor
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\scripts\Install-AndroidLab.ps1 -InstallRoot "$env:ANDROID_LAB_HOME/runtime" -Uninstall
