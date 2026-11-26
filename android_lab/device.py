@@ -143,6 +143,13 @@ class DeviceSession:
                 self.state.event(self.session, "rehearsal_lock", awake=awake, keyguard_observations=locked)
             raise LabError("lock_state", "Display power or lock state does not allow a personal session")
 
+    def assert_server_path_clear(self):
+        remote = "/data/local/tmp/scrcpy-server.jar"
+        probe = f"if [ ! -e {remote} ] && [ ! -L {remote} ]; then echo LAB_SERVER_ABSENT; else exit 17; fi"
+        code, answer = self.shell("sh", "-c", probe, check=False)
+        if code != 0 or answer.strip() != "LAB_SERVER_ABSENT":
+            raise LabError("backend_in_use", "Existing or unreadable scrcpy server file; preserve it and stop the trial")
+
     def start_secondary(self, duration):
         self.check_transport()
         features = self.shell("pm", "list", "features").splitlines()
@@ -153,10 +160,8 @@ class DeviceSession:
         previous = display_counters(layout)
         if any(number != 0 and display_identity(layout, number) for number in previous):
             raise LabError("display_in_use", "Another scrcpy display is already present")
-        for option in ("-e", "-L"):
-            code, _ = self.shell("test", option, "/data/local/tmp/scrcpy-server.jar", check=False)
-            if code != 1:
-                raise LabError("backend_in_use", "Existing or unreadable scrcpy server file; preserve it and stop the trial")
+        self.assert_server_path_clear()
+        self.check_transport()
         if self.cancelled():
             raise LabError("cancelled", "Session cancelled before display creation")
         self.data["secondary"] = {"previous": sorted(previous), "pending": True}

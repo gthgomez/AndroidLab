@@ -225,11 +225,12 @@ class DisplayTests(unittest.TestCase):
         platform = Mock()
         data = {"route": "personal", "device": {}, "required": []}
         work = DeviceSession(platform, Mock(), "session", data, Path("."))
-        with patch.object(work, "check_transport"), patch.object(work, "check_lock"), patch.object(
-            work, "layout", return_value="Display 0:\n"
-        ), patch.object(work, "shell", side_effect=["feature:android.software.activities_on_secondary_displays", (0, "")]):
-            with self.assertRaisesRegex(LabError, "Existing or unreadable"):
-                work.start_secondary(60)
+        for probe in ((17, ""), (1, "adb: device offline")):
+            with patch.object(work, "check_transport"), patch.object(work, "check_lock"), patch.object(
+                work, "layout", return_value="Display 0:\n"
+            ), patch.object(work, "shell", side_effect=["feature:android.software.activities_on_secondary_displays", probe]):
+                with self.assertRaisesRegex(LabError, "Existing or unreadable"):
+                    work.start_secondary(60)
         platform.begin_secondary.assert_not_called()
 
     def test_hierarchy_strips_foreign_nodes_and_rejects_wrong_app(self):
@@ -335,6 +336,34 @@ class InterfaceTests(unittest.TestCase):
                 self.assertEqual(execute(broker, args), invoke(broker, "lab_plan", {"project": "fixtures", "suite": "ui"}))
             with self.assertRaises(LabError):
                 invoke(broker, "lab_plan", {"project": "fixtures", "suite": "ui", "serial": "anything"})
+
+    def test_cancel_before_step_precheck_releases_the_bound_session(self):
+        from threading import Event
+
+        with tempfile.TemporaryDirectory() as temp:
+            broker = Broker(Config(Path(temp), {}))
+            session, token = broker.state.acquire(["fixture"], 60, {"execution": "ready", "route": "emulator"})
+            jobs = Jobs(broker)
+            self.addCleanup(jobs.close)
+            bound = Event()
+            proceed = Event()
+            real_step = Broker.step
+
+            def delay_precheck(worker, *args):
+                bound.set()
+                proceed.wait(timeout=4)
+                return real_step(worker, *args)
+
+            with patch.object(Broker, "step", delay_precheck):
+                try:
+                    receipt = jobs.submit("lab_step", {"session": session, "token": token, "operation": {"op": "inspect"}})
+                    self.assertTrue(bound.wait(timeout=2))
+                    jobs.cancel(receipt["job"])
+                finally:
+                    proceed.set()
+                    jobs.pool.shutdown()
+            self.assertEqual("complete", jobs.status(receipt["job"])["result"]["cleanup"])
+            self.assertEqual(set(), broker.state.leased())
 
     def test_stdio_protocol(self):
         requests = [

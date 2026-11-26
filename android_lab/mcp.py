@@ -95,7 +95,15 @@ class Jobs:
             if name in ("lab_step", "lab_close"):
                 worker.state.get(arguments["session"], arguments["token"])
                 bind(arguments["session"])
-            result = invoke(worker, name, arguments, on_session=bind)
+            try:
+                result = invoke(worker, name, arguments, on_session=bind)
+            except LabError:
+                if item["cancel_requested"].is_set() and item["session"]:
+                    return worker.close(item["session"])
+                raise
+            if (item["cancel_requested"].is_set() and item["session"]
+                    and worker.state.get(item["session"])["status"] != "closed"):
+                return worker.close(item["session"])
             if name == "lab_start" and "session_token" in result:
                 self.sessions[result["session"]] = result["session_token"]
             if name == "lab_close":

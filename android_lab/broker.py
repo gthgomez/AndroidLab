@@ -424,6 +424,8 @@ class Broker:
             else:
                 gone = lambda: work.display not in display_counters(work.layout())
             wait_until(gone, 15, "Secondary display cleanup is unverified")
+            if secondary.get("name", "scrcpy") == "scrcpy":
+                work.assert_server_path_clear()
         emulator = data.get("emulator")
         if emulator:
             connected = [dev for dev in self.platform.devices(strict=True) if dev["serial"] == emulator["serial"]]

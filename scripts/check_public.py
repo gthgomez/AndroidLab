@@ -1,4 +1,5 @@
 """Scan tracked source for common secret and local-evidence indicators."""
+import io
 import re
 import subprocess
 import sys
@@ -17,13 +18,24 @@ BINARY = {".apk", ".aab", ".jks", ".keystore", ".aar", ".zip", ".db", ".sqlite",
 def scan():
     files = subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0")
     failures = []
+    scan_paths = []
     for path in filter(None, files):
-        if PurePosixPath(path).suffix.lower() in BINARY or "/.env" in "/" + path:
+        if ("\n" in path or "\r" in path or PurePosixPath(path).suffix.lower() in BINARY
+                or "/.env" in "/" + path):
             failures.append(path)
             continue
         if path == "scripts/check_public.py":
             continue
-        data = subprocess.check_output(["git", "show", ":" + path])
+        scan_paths.append(path)
+    requests = "".join(":" + path + "\n" for path in scan_paths).encode()
+    contents = io.BytesIO(subprocess.check_output(["git", "cat-file", "--batch"], input=requests))
+    for path in scan_paths:
+        header = contents.readline().split()
+        if len(header) != 3 or header[1] != b"blob" or not header[2].isdigit():
+            raise SystemExit("Cannot verify the Git index. Resolve missing, conflicting or non-file entries.")
+        data = contents.read(int(header[2]))
+        if len(data) != int(header[2]) or contents.read(1) != b"\n":
+            raise SystemExit("Git returned incomplete staged content.")
         if any(re.search(pattern, data) for pattern in INDICATORS):
             failures.append(path)
     return failures
