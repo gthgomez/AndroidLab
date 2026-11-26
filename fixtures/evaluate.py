@@ -57,16 +57,18 @@ def evaluate(events, other, marker, display, expected_primary=None, expected_aut
     resumes = [row for row in secondary if row["event"] == "resume"]
     if resumes and automation_gestures:
         start, end = resumes[0]["uptime_ms"], automation_gestures[-1]["uptime_ms"]
-        primary_mid = [row for row in primary if start <= row["uptime_ms"] <= end]
-        checks["primary_retains_focus"] = focused_at(primary, start) and not any(
+        before = [row["uptime_ms"] for row in primary_gestures if row["uptime_ms"] < start]
+        after = [row["uptime_ms"] for row in primary_gestures if row["uptime_ms"] > end]
+        beginning = before[0] if before else start
+        finish = after[0] if after else end
+        primary_mid = [row for row in primary if beginning <= row["uptime_ms"] <= finish]
+        checks["primary_retains_focus"] = focused_at(primary, beginning) and not any(
             row["event"] in ("pause", "stop", "destroy", "create")
             or (row["event"] == "focus" and row.get("focused") is not True)
             for row in primary_mid
         )
         checks["primary_input_brackets_automation"] = (
-            any(row["uptime_ms"] < start for row in primary_gestures)
-            and any(start < row["uptime_ms"] < end for row in primary_gestures)
-            and any(row["uptime_ms"] > end for row in primary_gestures)
+            bool(before) and bool(after) and any(start < row["uptime_ms"] < end for row in primary_gestures)
         )
     else:
         checks["primary_retains_focus"] = False

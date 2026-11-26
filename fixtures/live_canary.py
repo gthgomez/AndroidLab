@@ -9,12 +9,28 @@ import sys
 from pathlib import Path
 
 from rehearse import PACKAGES, ROOT, observations
-from evaluate import evaluate
+from evaluate import evaluate, read_events
 from android_lab.artifact import read_apk
 from android_lab.broker import Broker
 from android_lab.common import LabError, json_write, wait_until
 from android_lab.config import Config
 from android_lab.device import DeviceSession
+
+
+def active_primary(rows):
+    focus = [row.get("focused") for row in rows if row.get("event") == "focus"]
+    lifecycle = [row.get("event") for row in rows if row.get("event") in ("resume", "pause", "stop", "destroy")]
+    return bool(focus and focus[-1] is True and lifecycle and lifecycle[-1] == "resume")
+
+
+def primary_untouched(rows, offset):
+    if len(rows) < offset or not active_primary(rows):
+        return False
+    return not any(
+        row.get("event") in ("create", "pause", "stop", "destroy")
+        or (row.get("event") == "focus" and row.get("focused") is not True)
+        for row in rows[offset:]
+    )
 
 
 def operator_trial(alias, rehearsal_id):
@@ -30,6 +46,12 @@ def operator_trial(alias, rehearsal_id):
             or backend.get("profile") != "focus" or rehearsal.get("backend") != backend
             or not checks.get("passed")):
         raise LabError("rehearsal_required", "A passing paired AVD rehearsal of the exact focus-protected server is required")
+    evidence_dir = broker.directory(rehearsal_id)
+    automation = read_events(evidence_dir / "automation.jsonl")
+    primary = read_events(evidence_dir / "primary.jsonl")
+    marker = automation[0]["marker"] if automation else None
+    if not marker or not evaluate(primary, automation, marker, rehearsal.get("display"))["passed"]:
+        raise LabError("rehearsal_required", "Stored canary observations did not pass the current evaluator")
 
     device = next((row for row in platform.devices(strict=True) if row["id"] == alias and row["state"] == "device"), None)
     if not device or re.fullmatch(r"emulator-\d+", device["serial"]):
@@ -71,28 +93,42 @@ def operator_trial(alias, rehearsal_id):
             data["artifact"] = artifacts["automation"]
             print("Canaries installed. Open Android Lab Primary and tap Increment repeatedly until asked to stop.", flush=True)
 
-            def primary_taps():
-                if not work.installed(PACKAGES["primary"]):
-                    raise LabError("fixture_removed", "Primary canary disappeared")
+            def primary_rows():
                 code, output = work.shell("run-as", PACKAGES["primary"], "cat", "files/canary-events.jsonl", check=False)
                 if code:
-                    return 0
+                    return []
                 if len(output.encode()) > 65536:
                     raise LabError("log_limit", "Synthetic evidence exceeded its bound")
-                rows = [json.loads(line) for line in output.splitlines()]
-                return sum(row.get("event") == "tap" and row.get("display") == 0 and row.get("marker") == "UNSET"
-                           for row in rows)
+                return [row for row in map(json.loads, output.splitlines())
+                        if row.get("display") == 0 and row.get("marker") == "UNSET"]
 
-            wait_until(primary_taps, 60, "Owner primary-canary input was not observed", work.cancelled)
+            def taps(rows):
+                return sum(row.get("event") == "tap" for row in rows)
+
+            def ready_primary():
+                rows = primary_rows()
+                return rows if active_primary(rows) and taps(rows) else None
+
+            beginning = wait_until(ready_primary, 60, "A focused primary canary with owner input was not observed", work.cancelled)
+
+            def check_primary():
+                rows = primary_rows()
+                if not primary_untouched(rows, len(beginning)):
+                    raise LabError("primary_display_violation", "The primary canary lost focus or changed lifecycle")
+                return taps(rows)
+
+            check_primary()
             work.check_lock()
             work.start_secondary(80)
+            check_primary()
             work.launch(marker=marker)
+            check_primary()
             work.action({"op": "tap", "x": 250, "y": 375})
-            previous = primary_taps()
-            wait_until(lambda: primary_taps() > previous, 12, "Concurrent owner tap was not observed", work.cancelled)
+            previous = check_primary()
+            wait_until(lambda: check_primary() > previous, 12, "Concurrent owner tap was not observed", work.cancelled)
             work.action({"op": "swipe", "x1": 250, "y1": 480, "x2": 250, "y2": 620, "ms": 250})
-            previous = primary_taps()
-            wait_until(lambda: primary_taps() > previous, 12, "Owner follow-up tap was not observed", work.cancelled)
+            previous = check_primary()
+            wait_until(lambda: check_primary() > previous, 12, "Owner follow-up tap was not observed", work.cancelled)
             result = evaluate(observations(work, "primary"), observations(work, "automation"), marker, work.display,
                               fresh_operator_launch=True)
             data.update(execution="finished", functional="passed" if result["passed"] else "failed",

@@ -34,6 +34,14 @@ class QualifiedPairTests(unittest.TestCase):
         self.assertFalse(self.report()["passed"])
         self.assertTrue(self.report()["checks"]["automation_tap_and_swipe"])
 
+    def test_launch_focus_loss_detected_even_if_primary_regains_focus(self):
+        self.primary[2:2] = [event("focus", 2, 0, focused=False), event("focus", 3, 0, focused=True)]
+        self.assertFalse(self.report()["checks"]["primary_retains_focus"])
+
+    def test_focus_loss_after_last_secondary_gesture_detected(self):
+        self.primary[-1:-1] = [event("focus", 9, 0, focused=False), event("focus", 10, 0, focused=True)]
+        self.assertFalse(self.report()["checks"]["primary_retains_focus"])
+
     def test_automation_primary_display_fails(self):
         self.automation[1]["display"] = 0
         self.assertFalse(self.report()["checks"]["automation_identity"])
