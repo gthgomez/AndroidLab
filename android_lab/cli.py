@@ -63,6 +63,7 @@ def qualification(broker, alias, evidence_file):
         raise LabError("no_enrollment", "Create a disabled owner enrollment before importing qualification")
     evidence = json_read(Path(evidence_file))
     capabilities = evidence.get("capabilities", [])
+    observed = evidence.get("observed_unix", 0)
     if (not isinstance(capabilities, list) or not capabilities or not set(capabilities) <= allowed
             or evidence.get("passed") is not True or evidence.get("operator_reviewed") is not True
             or not isinstance(evidence.get("checks"), dict)
@@ -70,15 +71,18 @@ def qualification(broker, alias, evidence_file):
             or not all(evidence["checks"].get(c) == "passed" for c in ("artifact_isolation", "cleanup", "stale_session", "disconnect"))
             or (mode == "personal" and not all(evidence["checks"].get(c) == "passed"
                                               for c in ("primary_canary", "placement", "lock", "external_activity")))
-            or not time.time() < evidence.get("expires_unix", 0) <= time.time() + 30 * 86400):
+            or not time.time() - 30 * 86400 <= observed <= time.time()
+            or not time.time() < evidence.get("expires_unix", 0) <= observed + 30 * 86400):
         raise LabError("qualification_incomplete", "Require reviewed operation-specific checks, safety checks, and expiry within 30 days")
     identity = device_identity(broker, alias)["identity"]
-    if evidence.get("identity") != identity:
+    if evidence.get("identity") != identity or evidence.get("device") != alias or evidence.get("mode") != mode:
         raise LabError("identity_changed", "Qualification must match current firmware, transport, and tool identity")
     entry["qualification"] = evidence
+    entry["enabled"] = False
+    json_write(config.home / "config.json", config.settings)
+    broker.state.accept_qualification(alias, observed)
     entry["enabled"] = True
     json_write(config.home / "config.json", config.settings)
-    broker.state.accept_qualification(alias)
     return {"device": alias, "capabilities": sorted(capabilities), "evidence": "operator_attested"}
 
 
@@ -110,7 +114,8 @@ def execute(broker, args):
             raise LabError("no_enrollment", "Device enrollment was not found")
         entries[args.device]["enabled"] = False
         json_write(broker.config.home / "config.json", broker.config.settings)
-        return {"device": args.device, "revoked": True}
+        broker.state.revoke(args.device)
+        return {"device": args.device, "revoked": True, "cleanup_attempts": broker.recover(args.device)}
     if command == "project":
         return broker.project(args.path).describe()
     if command == "plan":

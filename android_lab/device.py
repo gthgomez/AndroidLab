@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from .common import LabError, digest, wait_until
 
-RESUMED = re.compile(r"(?:topResumedActivity|mResumedActivity)[:=]\s*ActivityRecord\{[^\n]*?\bu\d+\s+([^\s/]+)/")
+RESUMED = re.compile(r"(?:topResumedActivity|mResumedActivity)[:=]\s*ActivityRecord\{[^\n]*?\bu0\s+([^\s/]+)/")
 DISPLAY_HEADER = re.compile(r"(?m)^\s*Display #(\d+)\s+\(activities")
 
 
@@ -32,7 +33,23 @@ def display_identity(text, display_id):
 
 
 def display_counters(text):
-    return {int(n) for n in re.findall(r"(?m)^\s*Display (\d+):\s*$", text)}
+    numbers = {int(n) for n in re.findall(r"(?m)^\s*Display (\d+):\s*$", text)}
+    if 0 not in numbers:
+        raise LabError("display_inventory_unknown", "Android display inventory could not be verified", uncertain=True)
+    return numbers
+
+
+def focused_package(text, display_id):
+    display = None
+    for line in text.splitlines():
+        match = re.search(r"(?:^\s*Display:\s*mDisplayId=|^\s*Display #)(\d+)\b", line)
+        if match:
+            display = int(match[1])
+        if display == display_id:
+            match = re.search(r"mCurrentFocus=Window\{[^\n]*?\bu0\s+([^\s/]+)/", line)
+            if match:
+                return match[1]
+    return None
 
 
 def clean_ui(xml, package):
@@ -75,9 +92,10 @@ def process_identity(pid):
 
 
 class DeviceSession:
-    def __init__(self, platform, state, session, data, directory):
+    def __init__(self, platform, state, session, data, directory, *, rehearsal=False):
         self.platform, self.state = platform, state
         self.session, self.data, self.directory = session, data, directory
+        self.rehearsal = rehearsal
 
     @property
     def device(self):
@@ -85,7 +103,7 @@ class DeviceSession:
 
     @property
     def personal(self):
-        return self.data["route"] == "personal"
+        return self.data["route"] == "personal" or self.rehearsal
 
     @property
     def display(self):
@@ -110,7 +128,7 @@ class DeviceSession:
         return self.platform.adb(*args, device=self.device, **kwargs)
 
     def shell(self, *args, **kwargs):
-        return self.adb("shell", *args, **kwargs)
+        return self.adb("shell", shlex.join(map(str, args)), **kwargs)
 
     def layout(self):
         return self.shell("dumpsys", "display")
@@ -176,6 +194,8 @@ class DeviceSession:
             raise LabError("primary_display_violation", "Session app appeared on the primary display", uncertain=True)
         if (self.personal and 0 not in observed) or observed.get(self.display) != [self.package]:
             raise LabError("placement_unverified", "Session app is not the sole resumed app on the assigned display")
+        if self.personal and focused_package(self.shell("dumpsys", "window", "displays"), self.display) != self.package:
+            raise LabError("window_unverified", "The virtual display's focused window is not the authorized QA app")
         return self.display
 
     def installed(self, package):
@@ -196,15 +216,26 @@ class DeviceSession:
             raise LabError("existing_package", "Package already exists; its data is preserved")
         if digest(staged) != artifact["sha256"]:
             raise LabError("artifact_changed", "Staged APK changed after validation")
-        self.data.setdefault("packages", []).append(artifact)
+        ownership = artifact | {"install_state": "pending"}
+        self.data.setdefault("packages", []).append(ownership)
         self.save()
         self.state.event(self.session, "operation_started", operation="install", package=package)
-        output = self.adb("install", "-R", "--user", "0", "--no-streaming", *(["-t"] if artifact["instrumentation"] else []), staged, timeout=60)
-        if "Success" not in output.splitlines() or not self.installed_bytes_match(artifact):
+        code, output = self.adb("install", "-R", "--user", "0", "--no-streaming",
+                                *(["-t"] if artifact["instrumentation"] else []), staged, timeout=60, check=False)
+        denied = re.search(r"\b(INSTALL_(?:FAILED|PARSE_FAILED)_[A-Z0-9_]+)\b", output)
+        if code and denied:
+            self.data["packages"].remove(ownership)
+            self.save()
+            raise LabError("install_rejected", f"Android rejected installation ({denied[1]})")
+        if code or "Success" not in output.splitlines():
             raise LabError("install_unverified", "Installation result is uncertain", uncertain=True)
+        ownership["install_state"] = "confirmed"
+        self.save()
+        if not self.installed_bytes_match(artifact):
+            raise LabError("install_identity_mismatch", "Installed APK bytes could not be verified", uncertain=True)
         self.state.event(self.session, "operation_finished", operation="install", package=package)
 
-    def launch(self, *, restart=False):
+    def launch(self, *, restart=False, marker=None):
         self.assert_bound()
         activity = self.data["artifact"]["activity"]
         if not activity:
@@ -214,8 +245,13 @@ class DeviceSession:
         if restart:
             self.shell("am", "force-stop", "--user", "0", self.package)
         self.state.event(self.session, "operation_started", operation="launch")
+        extras = []
+        if marker is not None:
+            if not self.package.startswith("com.androidlab.canary.") or not re.fullmatch(r"[A-Za-z0-9-]{1,40}", marker):
+                raise LabError("invalid_marker", "Only a synthetic canary can receive a qualification marker")
+            extras = ["--es", "lab_marker", marker]
         result = self.shell("am", "start", "--user", "0", "-W", "--display", str(self.display),
-                            "-n", self.package + "/" + activity, timeout=20)
+                            "-n", self.package + "/" + activity, *extras, timeout=25)
         if any(line.startswith(("Error", "Exception")) for line in result.splitlines()):
             raise LabError("launch_failed", "Android rejected the explicit activity launch")
 
@@ -223,7 +259,7 @@ class DeviceSession:
             try:
                 return self.placement() == self.display
             except LabError as err:
-                if err.code != "placement_unverified":
+                if err.code not in ("placement_unverified", "window_unverified"):
                     raise
                 return False
 
@@ -333,12 +369,14 @@ class DeviceSession:
         self.check_transport()
         for artifact in reversed(self.data.get("packages", [])):
             package = artifact["package"]
+            if artifact.get("install_state") != "confirmed":
+                raise LabError("install_ownership_uncertain", "A lost install response requires owner reconciliation", uncertain=True)
             if self.installed(package):
                 if not self.installed_bytes_match(artifact):
                     raise LabError("cleanup_identity_mismatch", "Installed APK differs from the owned artifact")
                 self.shell("am", "force-stop", "--user", "0", package)
-                outcome = self.adb("uninstall", "--user", "0", package, timeout=30)
-                if "Success" not in outcome.splitlines() or self.installed(package):
+                code, outcome = self.shell("pm", "uninstall", "--user", "0", package, timeout=30, check=False)
+                if code or "Success" not in outcome.splitlines() or self.installed(package):
                     raise LabError("cleanup_failed", "Owned package removal could not be verified", uncertain=True)
         if self.data.get("tree_path"):
             self.shell("rm", "-f", self.data["tree_path"])

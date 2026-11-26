@@ -4,7 +4,7 @@ A Windows-native test runner and local Android device broker for developers and 
 
 ## Install on Windows
 
-You need Python 3.10+, a project-compatible JDK, Android SDK Platform Tools and Build Tools, and an installed AVD for runtime tests. Enable Windows emulator acceleration separately through the normal Android SDK setup. Existing SDKs and AVDs are reused.
+You need PowerShell 7, Python 3.10+, a project-compatible JDK, Android SDK Platform Tools and Build Tools, and an installed AVD for runtime tests. Enable Windows emulator acceleration separately through the normal Android SDK setup. Existing SDKs and AVDs are reused.
 
 ```powershell
 git clone https://github.com/gthgomez/AndroidLab.git
@@ -64,6 +64,8 @@ The broker supports exploratory `start`, `step` and session cancellation. Declar
 | Cloud | Public source and host or emulator testing on a worker's own SDK. No remote dispatch to a personal device. |
 
 The default state directory is `%LOCALAPPDATA%\AndroidLab`. Do not commit local policies, device evidence or screenshots. See [architecture](docs/architecture.md), [security and trust boundaries](SECURITY.md), [physical qualification](docs/qualification.md), [upstream review](docs/upstream.md), [agent integration](docs/agents.md), and the [synthetic canary fixture](fixtures/README.md).
+
+An owner can add private project overrides in the local configuration under `projects`. Use the fully resolved project directory, normalized to lowercase with Windows path separators, as the key. The entry uses the same manifest fields. This is useful for existing flavors and prebuilt APK workflows without editing another repository.
 
 ## Verify and uninstall
 

@@ -27,7 +27,7 @@ def read_apk(path, config, *, stage=None):
     if (build_tools / "lib/apksigner.jar").is_file():
         exe = "java.exe" if (build_tools / "aapt.exe").exists() else "java"
         java = Path(java_home) / "bin" / exe if java_home else exe
-        signer = [java, "-jar", build_tools / "lib/apksigner.jar"]
+        signer = [java, "-Xmx256m", "-jar", build_tools / "lib/apksigner.jar"]
     else:
         signer = [config.build_tool("apksigner", ".bat")]
     verified = run([*signer, "verify", "--print-certs", path], timeout=30)

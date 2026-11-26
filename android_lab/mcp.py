@@ -99,8 +99,10 @@ def serve(broker, source=None, output=None):
                             sessions[payload["session"]] = payload["session_token"]
                         if name == "lab_close":
                             sessions.pop(arguments["session"], None)
-                        failed = isinstance(payload, dict) and (payload.get("execution") in ("blocked", "failed", "cancelled")
-                                                                  or payload.get("cleanup") == "quarantined")
+                        failed = isinstance(payload, dict) and (
+                            payload.get("cleanup") == "quarantined" or
+                            (name != "lab_close" and payload.get("execution") in ("blocked", "failed", "cancelled"))
+                        )
                     except LabError as err:
                         failed = True
                         payload = {"error": {"code": err.code, "message": str(err), "uncertain": err.uncertain}}

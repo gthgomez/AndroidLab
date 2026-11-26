@@ -4,6 +4,8 @@ Physical-device access starts disabled. An owner must authorize a distinct quali
 
 Use the same paired fixtures, marker, firmware, transport, session dimensions and actions for each backend under comparison. Record the precise backend and SDK versions and compare the event results independently of backend exit codes. Follow the [canary instructions](../fixtures/README.md).
 
+Rehearse placement and interleaved gestures on a disposable AVD first. Build the canaries, install pinned scrcpy, then run `python fixtures/rehearse.py --avd AVD_NAME`. The rehearsal records synthetic app events and cleanup. Its output describes the AVD only.
+
 ## Required observations
 
 | Check | Observable result |
@@ -22,7 +24,7 @@ The core regression suite uses simulated inventories and deliberately invalid in
 
 Owner enrollment is in the local `config.json`. Use the alias from `android-lab devices list`, bind `mode` to `personal` or a verified dedicated `exclusive` device, and set `enabled` to false initially. Specify conservative `max_seconds`, `min_battery`, and `max_thermal`. Collect the current identity with `android-lab devices identity DEVICE_ALIAS`. The explicit operator-only `qualify` command imports an externally reviewed record. It does not perform qualification or permit a live trial on its own.
 
-A local reviewed record contains `identity`, `passed: true`, `operator_reviewed: true`, `expires_unix` within 30 days, `capabilities`, and `checks` keyed by operation with value `passed`. Additional check names are `artifact_isolation`, `cleanup`, `stale_session` and `disconnect`, plus `primary_canary`, `placement`, `lock` and `external_activity` for personal devices. Retain per-check evidence alongside the record and review before import.
+A local reviewed record contains `device` (the exact alias), `mode`, `identity`, `passed: true`, `operator_reviewed: true`, `observed_unix`, an `expires_unix` within 30 days of observation, `capabilities`, and `checks` keyed by operation with value `passed`. Additional check names are `artifact_isolation`, `cleanup`, `stale_session` and `disconnect`, plus `primary_canary`, `placement`, `lock` and `external_activity` for personal devices. Retain per-check evidence alongside the record and review before import. Clearing a failed qualification requires new observations made after the failure.
 
 Use `android-lab artifact APP.apk` to inspect exact identities. The owner's device entry lists reviewed `artifacts` with fields `package`, `sha256`, `signers`, `permissions`, `instrumentation`, and `allows`. Plans can request an operation. Only owner policy can permit it. Firmware changes and safety failures require review and fresh evidence before re-enabling.
 

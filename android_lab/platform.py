@@ -101,12 +101,20 @@ class Platform:
         command = [self.config.executable("platform-tools", "adb")]
         if device:
             command.extend(["-t", str(device["transport_id"])])
-        return run([*command, *args], env=self.config.tool_env, **kwargs)
+        try:
+            return run([*command, *args], env=self.config.tool_env, **kwargs)
+        except LabError as err:
+            raise LabError(err.code, f"ADB {args[0]}: {err}", uncertain=err.uncertain) from err
 
     def devices(self, *, strict=False):
         try:
-            return parse_devices(self.adb("devices", "-l"))
+            output = self.adb("devices", "-l")
+            if "List of devices attached" not in output.splitlines():
+                raise LabError("adb_inventory_unknown", "ADB did not return a recognized device inventory")
+            return parse_devices(output)
         except LabError:
+            if strict:
+                raise
             return []
 
     def find(self, saved):
@@ -150,8 +158,9 @@ class Platform:
             caps = set(EMULATOR)
             if "tv" in info.get("tag.id", "").lower():
                 caps.add("tv")
-            configured_ram = info.get("hw.ramSize", "2048")
-            ram = int(configured_ram) if configured_ram.isdecimal() else 2048
+            configured_ram = re.fullmatch(r"(\d+)\s*([MG])?", info.get("hw.ramSize", "2048"), re.I)
+            ram = (int(configured_ram[1]) * (1024 if (configured_ram[2] or "").upper() == "G" else 1)
+                   if configured_ram else 2048)
             ram = self.config.budget("emulator_ram_mib", ram)
             estimated = ram + self.config.budget("emulator_overhead_mib", 640)
             results[name] = {"id": "avd:" + name, "name": name, "kind": "avd", "api": int(version[1]) if version else 0,
@@ -176,12 +185,16 @@ class Platform:
     def identity(self, device, mode):
         api = self.prop(device, "ro.build.version.sdk")
         fingerprint = self.prop(device, "ro.build.fingerprint")
-        if not api.isdecimal() or not fingerprint:
+        serial = self.prop(device, "ro.boot.serialno") or self.prop(device, "ro.serialno")
+        if (not api.isdecimal() or not fingerprint or len(serial) < 5
+                or serial.lower() in ("unknown", "0123456789abcdef")):
             raise LabError("unknown_device", "Android firmware or SDK could not be identified")
+        sources = [Path(__file__).with_name(name) for name in ("platform.py", "device.py", "broker.py", "artifact.py", "planner.py", "state.py", "cli.py")]
         adb_version = self.adb("version").splitlines()
         return {"api": int(api), "fingerprint": fingerprint, "transport": device["transport"],
+                "device_identity": hashlib.sha256(("android-lab:physical:" + serial).encode()).hexdigest(),
                 "adb": adb_version[:2], "adb_sha256": digest(self.config.executable("platform-tools", "adb")),
-                "adapter_sha256": digest(Path(__file__)),
+                "adapter_sha256": hashlib.sha256("".join(map(digest, sources)).encode()).hexdigest(),
                 "backend": self.scrcpy_identity() if mode == "personal" else {"version": "adb"}}
 
     def health(self, device, policy):
@@ -228,7 +241,8 @@ class Platform:
                     continue
                 identity = self.identity(dev, mode)
                 evidence = policy.get("qualification", {})
-                exact = evidence.get("identity") == identity and evidence.get("passed") is True
+                exact = (evidence.get("identity") == identity and evidence.get("passed") is True
+                         and evidence.get("device") == dev["id"] and evidence.get("mode") == mode)
                 fresh = time.time() < evidence.get("expires_unix", 0)
                 caps = (PERSONAL if mode == "personal" else EXCLUSIVE).intersection(evidence.get("capabilities", []))
                 if "native_arm64" in caps and "arm64-v8a" not in self.prop(dev, "ro.product.cpu.abilist").split(","):

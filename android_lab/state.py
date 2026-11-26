@@ -29,12 +29,16 @@ class State:
                 CREATE TABLE IF NOT EXISTS leases (
                     resource TEXT PRIMARY KEY, session TEXT NOT NULL REFERENCES sessions(id)
                 );
-                CREATE TABLE IF NOT EXISTS invalidated (alias TEXT PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS invalidated (alias TEXT PRIMARY KEY, failures_since REAL);
                 CREATE TABLE IF NOT EXISTS events (
                     seq INTEGER PRIMARY KEY, session TEXT NOT NULL REFERENCES sessions(id),
                     at REAL NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
                 );
             """)
+            db.execute("BEGIN IMMEDIATE")
+            if "failures_since" not in {row["name"] for row in db.execute("PRAGMA table_info(invalidated)")}:
+                db.execute("ALTER TABLE invalidated ADD COLUMN failures_since REAL")
+                db.execute("UPDATE invalidated SET failures_since = ?", (time.time(),))
 
     @contextmanager
     def connect(self):
@@ -138,10 +142,22 @@ class State:
             yield
     def invalidate(self, alias):
         with self.connect() as db:
-            db.execute("INSERT OR IGNORE INTO invalidated VALUES (?)", (alias,))
+            db.execute("INSERT OR REPLACE INTO invalidated VALUES (?, ?)", (alias, time.time()))
 
-    def accept_qualification(self, alias):
+    def revoke(self, alias):
         with self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO invalidated VALUES (?, ?)", (alias, time.time()))
+            db.execute(
+                "UPDATE sessions SET cancelled = 1 WHERE status = 'active' AND json_extract(data, '$.planned_device') = ?",
+                (alias,),
+            )
+
+    def accept_qualification(self, alias, observed):
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT failures_since FROM invalidated WHERE alias = ?", (alias,)).fetchone()
+            if row is not None and observed <= row[0]:
+                raise LabError("stale_qualification", "Device requires qualification observed after the latest invalidation")
             db.execute("DELETE FROM invalidated WHERE alias = ?", (alias,))
 
     def invalidated(self):

@@ -6,7 +6,7 @@ import time
 
 from .artifact import authorize, read_apk
 from .common import LabError, json_write, run, wait_until
-from .device import DeviceSession, display_counters, display_identity, process_identity
+from .device import DeviceSession, display_counters, process_identity
 from .planner import choose
 from .platform import Platform, host_sample
 from .project import ACTIONS, ACTION_CAP, Project
@@ -81,7 +81,7 @@ class Broker:
         return project
 
     def start(self, path, name, *, interactive=False):
-        project = Project.discover(path)
+        project = self.project(path)
         suite = project.suite(name)
         plan = self.plan(suite)
         route, device = plan["route"], plan["device"]
@@ -89,6 +89,7 @@ class Broker:
         if route == "host" or (device and not suite.get("prebuilt", False)):
             resources.append("build")
         data = {"project": project.root.name, "revision": project.revision(), "suite": name, "route": route,
+                "planned_device": device["id"] if device else None,
                 "plan": self.describe_plan(plan), "required": suite["requires"], "building": False,
                 "execution": "started", "functional": "unverified", "safety": "unverified",
                 "evidence": "partial", "cleanup": "pending"}
@@ -170,8 +171,9 @@ class Broker:
             raise LabError("cancelled", "Session expired before APK validation")
         staged = directory / "app.apk"
         artifact = read_apk(project.apk(suite), self.config, stage=staged)
-        policy = self.config.settings.get("devices", {}).get(device["id"], {})
-        authorize(artifact, route, policy, suite["requires"])
+        physical = route in ("personal", "exclusive")
+        if physical:
+            self.physical_policy(device, suite["requires"], artifact)
         data["artifact"] = artifact
         test = None
         test_path = directory / "test.apk"
@@ -180,13 +182,15 @@ class Broker:
             if (len(test["instrumentation"]) != 1 or test["instrumentation"][0]["target"] != artifact["package"]
                     or test["package"] == artifact["package"] or test["signers"] != artifact["signers"]):
                 raise LabError("test_target_mismatch", "Test APK must target the approved app and use the same signer")
-            authorize(test, route, policy, suite["requires"])
+            if physical:
+                self.physical_policy(device, suite["requires"], test)
             data["test_artifact"] = test
         if route == "managed_emulator":
             device = self.boot_avd(session, device, data, directory)
         else:
             self.platform.find(device)
-            if route in ("personal", "exclusive"):
+            if physical:
+                policy = self.physical_policy(device, suite["requires"], artifact)
                 if self.platform.identity(device, route) != device["identity"] or not self.platform.health(device, policy):
                     raise LabError("qualification_changed", "Device identity or health changed after planning")
         if route in ("personal", "exclusive") and self.platform.adb("shell", "am", "get-current-user", device=device).strip() != "0":
@@ -199,15 +203,24 @@ class Broker:
         if any(a["abis"] and not set(a["abis"]).intersection(abis) for a in (artifact, test) if a):
             raise LabError("unsupported_abi", "APK native ABI does not match the selected runtime")
         self.state.update(session, data)
+        def before_mutation():
+            if cancelled():
+                raise LabError("cancelled", "Session expired or was revoked before mutation")
+            if physical:
+                self.physical_policy(device, suite["requires"], artifact)
+                if test:
+                    self.physical_policy(device, suite["requires"], test)
+
+        before_mutation()
         work = DeviceSession(self.platform, self.state, session, data, directory)
         if route == "personal":
             remaining = int(self.state.get(session)["expires"] - time.time())
             if remaining < 10:
                 raise LabError("timeout", "Insufficient time to provision the display")
             work.start_secondary(remaining)
-        if cancelled():
-            raise LabError("cancelled", "Session expired before app installation")
+        before_mutation()
         work.install(artifact, staged)
+        before_mutation()
         if test:
             work.install(test, test_path)
         else:
@@ -265,6 +278,20 @@ class Broker:
         self.state.event(session, "emulator_booted", avd=avd["name"])
         return dev
 
+    def physical_policy(self, device, required, artifact):
+        current = type(self.config).load(self.config.home)
+        entry = current.settings.get("devices", {}).get(device["id"], {})
+        evidence = entry.get("qualification", {})
+        if (entry.get("mode") != device["kind"] or not entry.get("enabled")
+                or evidence.get("device") != device["id"] or evidence.get("mode") != device["kind"]
+                or evidence.get("identity") != device.get("identity")
+                or evidence.get("expires_unix", 0) <= time.time() or evidence.get("passed") is not True
+                or device["id"] in self.state.invalidated()
+                or not set(required).issubset(evidence.get("capabilities", []))):
+            raise LabError("device_revoked", "Physical-device qualification was revoked or changed")
+        authorize(artifact, device["kind"], entry, required)
+        return entry
+
     def step_locked(self, session, data, step):
         if self.state.cancelled(session):
             raise LabError("stale_session", "Session has expired or was cancelled")
@@ -274,15 +301,7 @@ class Broker:
         if ACTION_CAP.get(operation, operation) not in data["required"] or (operation == "tap" and "text" in step and "inspect" not in data["required"]):
             raise LabError("capability_denied", "Operation was not authorized in the session plan")
         if data["route"] in ("personal", "exclusive"):
-            current = type(self.config).load(self.config.home)
-            entry = current.settings.get("devices", {}).get(data["device"]["id"], {})
-            evidence = entry.get("qualification", {})
-            if (not entry.get("enabled") or evidence.get("identity") != data["device"].get("identity")
-                    or evidence.get("expires_unix", 0) <= time.time() or evidence.get("passed") is not True
-                    or data["device"]["id"] in self.state.invalidated()
-                    or not set(data["required"]).issubset(evidence.get("capabilities", []))):
-                raise LabError("device_revoked", "Physical-device qualification was revoked or changed")
-            authorize(data["artifact"], data["route"], entry, data["required"])
+            self.physical_policy(data["device"], data["required"], data["artifact"])
         self.state.event(session, "operation_started", operation=operation)
         result = DeviceSession(self.platform, self.state, session, data, self.directory(session)).action(step)
         self.state.event(session, "operation_finished", operation=operation, assertion=result.get("assertion", False))
@@ -362,7 +381,7 @@ class Broker:
             if secondary.get("pending"):
                 gone = lambda: not display_counters(work.layout()).difference(secondary["previous"])
             else:
-                gone = lambda: display_identity(work.layout(), work.display) is None
+                gone = lambda: work.display not in display_counters(work.layout())
             wait_until(gone, 15, "Secondary display cleanup is unverified")
         emulator = data.get("emulator")
         if emulator:
@@ -395,9 +414,11 @@ class Broker:
             self.cleanup_locked(session, data)
         return self.report(session)
 
-    def recover(self):
+    def recover(self, device=None):
         results = []
         for row in self.state.all():
+            if device is not None and self.state.get(row["id"])["data"].get("planned_device") != device:
+                continue
             if row["status"] == "quarantined" or (row["status"] == "active" and (row["cancelled"] or row["expires"] <= time.time())):
                 try:
                     results.append(self.close(row["id"]))

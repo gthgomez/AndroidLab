@@ -10,12 +10,12 @@ from unittest.mock import Mock, patch
 from android_lab.artifact import authorize
 from android_lab.broker import Broker
 from android_lab.cli import execute, parser
-from android_lab.common import LabError
+from android_lab.common import LabError, digest, json_write
 from android_lab.config import Config
-from android_lab.device import DeviceSession, clean_ui, display_identity, resumed_packages
+from android_lab.device import DeviceSession, clean_ui, display_counters, display_identity, focused_package, resumed_packages
 from android_lab.mcp import invoke, serve
 from android_lab.planner import EMULATOR, PERSONAL, choose
-from android_lab.platform import parse_devices
+from android_lab.platform import Platform, parse_devices
 from android_lab.project import Project
 from android_lab.state import State
 
@@ -110,7 +110,9 @@ class StateTests(unittest.TestCase):
     def test_safety_invalidation_persists(self):
         self.state.invalidate("phone")
         self.assertEqual({"phone"}, State(self.home).invalidated())
-        self.state.accept_qualification("phone")
+        with self.assertRaisesRegex(LabError, "latest invalidation"):
+            self.state.accept_qualification("phone", time.time() - 1)
+        self.state.accept_qualification("phone", time.time())
         self.assertEqual(set(), self.state.invalidated())
 
     def test_recovery_distinguishes_absent_backend_from_failure(self):
@@ -154,6 +156,29 @@ class PolicyTests(unittest.TestCase):
         project = Project(Path("."), {"suites": {"ui": {"steps": [{"op": "tap", "text": "Increment"}]}}}, [])
         self.assertIn("inspect", project.suite("ui")["requires"])
 
+    def test_definite_install_refusal_cannot_own_other_packages(self):
+        with tempfile.TemporaryDirectory() as temp:
+            work = Path(temp)
+            apk = work / "fixture.apk"
+            apk.write_bytes(b"qa-fixture")
+            artifact = self.artifact | {"sha256": digest(apk)}
+            data = {}
+            device = DeviceSession(Mock(), Mock(), "session", data, work)
+            with patch.object(device, "check_transport"), patch.object(device, "installed", return_value=False):
+                with patch.object(device, "adb", return_value=(1, "Failure [INSTALL_FAILED_ALREADY_EXISTS]")) as adb:
+                    with self.assertRaisesRegex(LabError, "INSTALL_FAILED_ALREADY_EXISTS"):
+                        device.install(artifact, apk)
+                    self.assertIn("-R", adb.call_args.args)
+            self.assertEqual([], data["packages"])
+
+    def test_lost_install_response_is_not_cleanup_authority(self):
+        data = {"packages": [self.artifact | {"install_state": "pending"}]}
+        device = DeviceSession(Mock(), Mock(), "session", data, Path("."))
+        with patch.object(device, "check_transport"), patch.object(device, "adb") as adb:
+            with self.assertRaisesRegex(LabError, "owner reconciliation"):
+                device.cleanup()
+            adb.assert_not_called()
+
 
 class DisplayTests(unittest.TestCase):
     def test_resumed_packages_are_display_scoped(self):
@@ -169,6 +194,24 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual("virtual:owner:id", display_identity(text, 3))
         self.assertIsNone(display_identity(text, 13))
         self.assertIsNone(display_identity(text.replace("scrcpy", "Built-in Screen"), 3))
+
+    def test_unknown_inventory_cannot_prove_display_absence(self):
+        self.assertEqual({0, 4}, display_counters("Logical displays:\n Display 0:\n Display 4:\n"))
+        with self.assertRaisesRegex(LabError, "could not be verified"):
+            display_counters("Unexpected OEM format")
+
+    def test_focused_window_must_match_display_and_owner(self):
+        text = "Display: mDisplayId=0\n  mCurrentFocus=Window{a u0 org.example.app/.Main}\n"
+        text += "Display: mDisplayId=3\n  mCurrentFocus=Window{b u12 org.example.qa/.Main}\n"
+        self.assertEqual("org.example.app", focused_package(text, 0))
+        self.assertIsNone(focused_package(text, 3))
+
+    def test_adb_inventory_failure_cannot_prove_device_absence(self):
+        backend = Platform(Config(Path("."), {}))
+        with patch.object(backend, "adb", side_effect=LabError("timeout", "ADB unavailable")):
+            self.assertEqual([], backend.devices())
+            with self.assertRaisesRegex(LabError, "unavailable"):
+                backend.devices(strict=True)
 
     def test_hierarchy_strips_foreign_nodes_and_rejects_wrong_app(self):
         raw = b'<hierarchy><node package="org.example.qa" text="marker"/><node package="android" text="foreign"/></hierarchy>'
@@ -196,6 +239,21 @@ class DisplayTests(unittest.TestCase):
 
 
 class InterfaceTests(unittest.TestCase):
+    def test_local_project_overrides_apply_to_run(self):
+        import os
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            fixture = Path("fixtures").resolve()
+            override = {"suites": {"hardware": {"requires": ["oem"], "prebuilt": True, "apk": "sample.apk"}}}
+            json_write(home / "config.json", {"projects": {os.path.normcase(str(fixture)): override}})
+            broker = Broker(Config.load(home))
+            with patch.object(broker, "plan", return_value={"route": "blocked", "device": None, "reasons": []}) as plan:
+                broker.start(fixture, "hardware")
+            suite = plan.call_args.args[0]
+            self.assertTrue(suite["prebuilt"])
+            self.assertEqual("sample.apk", suite["apk"])
+            self.assertIn("oem", suite["requires"])
+
     def test_cli_mcp_plan_parity_and_strict_arguments(self):
         with tempfile.TemporaryDirectory() as temp:
             config = Config(Path(temp), {})
