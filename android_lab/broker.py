@@ -19,6 +19,9 @@ class Broker:
         self.state = State(config.home)
         self.platform = platform or Platform(config)
 
+    def reload_policy(self):
+        self.config.settings = type(self.config).load(self.config.home).settings
+
     def directory(self, session):
         return self.config.home / "runs" / session
 
@@ -40,13 +43,20 @@ class Broker:
     def inventory(self):
         inventory, presence = self.platform.inventory()
         invalidated = self.state.invalidated()
+        denied_ids = set()
         for route in inventory:
-            if route["id"] in invalidated:
+            if self.qualification_needs_refresh(route, route.get("qualified_at", 0), invalidated):
+                denied_ids.add(route["id"])
                 route.update(ready=False, capabilities=[])
         for row in presence:
-            if row["id"] in invalidated:
+            if row["id"] in denied_ids:
                 row.update(qualified=False, reason="Previous safety or recovery failure invalidated qualification")
         return inventory, presence
+
+    @staticmethod
+    def qualification_needs_refresh(device, observed, invalidated):
+        keys = [device["id"], *device.get("resources", [])]
+        return any(key in invalidated and observed <= invalidated[key] for key in keys)
 
     def devices(self):
         inventory, presence = self.inventory()
@@ -116,7 +126,13 @@ class Broker:
                     return self.report(session) | {"session_token": token}
                 elif "instrumentation" in suite["requires"]:
                     work = DeviceSession(self.platform, self.state, session, data, directory)
-                    remaining = max(1, int(self.state.get(session)["expires"] - time.time()))
+                    current = self.state.get(session, active=True)
+                    remaining = int(current["expires"] - time.time())
+                    if remaining <= 0:
+                        raise LabError("stale_session", "No remaining time for instrumentation")
+                    if route == "exclusive":
+                        self.physical_policy(data["device"], data["required"], data["artifact"])
+                        self.physical_policy(data["device"], data["required"], data["test_artifact"])
                     work.instrumentation(data["test_artifact"], remaining)
                     data.update(execution="finished", functional="passed", evidence="complete")
                 else:
@@ -247,6 +263,14 @@ class Broker:
             data.update(functional="passed", evidence="complete")
 
     def boot_avd(self, session, avd, data, directory):
+        host = host_sample(self.config, device=True)
+        needed = avd["memory_mib"] + self.config.budget("reserve_mib", 768)
+        if (host.get("free_mib", 0) < needed or host.get("commit_free_mib", 0) < needed
+                or host.get("cpu_percent", 101) >= self.config.budget("max_cpu_percent", 80)
+                or host.get("disk_mib", 0) < self.config.budget("min_disk_mib", 2048)
+                or host.get("emulator_count", 1) >= self.config.budget("max_emulators", 1)
+                or not host.get("accelerated")):
+            raise LabError("emulator_budget_changed", "Emulator capacity changed after planning")
         port = self.platform.choose_port()
         serial = f"emulator-{port}"
         data["emulator"] = {"serial": serial, "avd": avd["name"]}
@@ -276,6 +300,11 @@ class Broker:
         data["emulator"]["boot"] = self.platform.boot_identity(dev)
         self.state.update(session, data)
         self.state.event(session, "emulator_booted", avd=avd["name"])
+        if self.state.cancelled(session):
+            raise LabError("cancelled", "Session cancelled before emulator setup")
+        # This setup is confined to the AVD the broker just provisioned.
+        self.platform.adb("shell", "input", "-d", "0", "keyevent", "KEYCODE_WAKEUP", device=dev)
+        self.platform.adb("shell", "wm", "dismiss-keyguard", device=dev)
         return dev
 
     def physical_policy(self, device, required, artifact):
@@ -286,7 +315,7 @@ class Broker:
                 or evidence.get("device") != device["id"] or evidence.get("mode") != device["kind"]
                 or evidence.get("identity") != device.get("identity")
                 or evidence.get("expires_unix", 0) <= time.time() or evidence.get("passed") is not True
-                or device["id"] in self.state.invalidated()
+                or self.qualification_needs_refresh(device, evidence.get("observed_unix", 0), self.state.invalidated())
                 or not set(required).issubset(evidence.get("capabilities", []))):
             raise LabError("device_revoked", "Physical-device qualification was revoked or changed")
         authorize(artifact, device["kind"], entry, required)
@@ -328,10 +357,13 @@ class Broker:
         data["execution"] = "cancelled" if err.code in ("cancelled", "stale_session") else "failed"
         if err.code == "assertion_failed":
             data["functional"] = "failed"
-        if err.code in ("primary_display_violation", "wrong_display", "display_lost", "placement_unverified"):
+        placement_failure = err.code in ("primary_display_violation", "wrong_display", "display_lost",
+                                         "placement_unverified", "window_unverified", "display_inventory_unknown", "lock_state")
+        if placement_failure or (data["route"] == "personal" and err.uncertain):
             data["safety"] = "failed" if err.code == "primary_display_violation" else "unverified"
-        if data["route"] == "personal" and data.get("device") and err.code in ("primary_display_violation", "wrong_display", "display_lost", "placement_unverified", "wrong_hierarchy", "transport_lost"):
-            self.state.invalidate(data["device"]["id"])
+        if data["route"] == "personal" and data.get("device") and (placement_failure or err.uncertain):
+            for identity in (data["device"]["id"], *data["device"].get("resources", [])):
+                self.state.invalidate(identity)
         self.state.event(session, "error", **data["error"])
 
     def stop_owned_process(self, record):
@@ -358,7 +390,8 @@ class Broker:
         except (LabError, OSError) as err:
             data["cleanup"] = "quarantined"
             if data["route"] == "personal" and data.get("device"):
-                self.state.invalidate(data["device"]["id"])
+                for identity in (data["device"]["id"], *data["device"].get("resources", [])):
+                    self.state.invalidate(identity)
             self.state.event(session, "cleanup_failed", reason=str(err) if isinstance(err, LabError) else "Local file cleanup failed")
         self.state.update(session, data)
         self.state.event(session, "cleanup", status=data["cleanup"])
@@ -376,7 +409,13 @@ class Broker:
         if secondary:
             self.stop_owned_process(secondary)
         if data.get("packages") or secondary:
-            work.cleanup()
+            try:
+                work.rebind_cleanup_transport()
+                work.cleanup()
+            except LabError:
+                if not data.get("emulator"):
+                    raise
+                self.state.event(session, "discarding_emulator", reason="Scoped guest cleanup did not complete")
         if secondary:
             if secondary.get("pending"):
                 gone = lambda: not display_counters(work.layout()).difference(secondary["previous"])
@@ -388,11 +427,13 @@ class Broker:
             connected = [dev for dev in self.platform.devices(strict=True) if dev["serial"] == emulator["serial"]]
             if connected:
                 dev = connected[0]
-                if (not emulator.get("boot") or self.platform.avd_name(dev) != emulator["avd"]
-                        or self.platform.boot_identity(dev) != emulator["boot"]):
-                    raise LabError("emulator_recovery_pending", "Emulator at reserved port cannot be attributed safely")
-                exe = self.config.executable("platform-tools", "adb")
-                run([exe, "-s", emulator["serial"], "emu", "kill"], env=self.config.tool_env, timeout=10)
+                if emulator.get("boot"):
+                    if self.platform.avd_name(dev) != emulator["avd"] or self.platform.boot_identity(dev) != emulator["boot"]:
+                        raise LabError("emulator_recovery_pending", "Emulator at reserved port cannot be attributed safely")
+                    exe = self.config.executable("platform-tools", "adb")
+                    run([exe, "-s", emulator["serial"], "emu", "kill"], env=self.config.tool_env, timeout=10)
+                elif not emulator.get("process") or process_identity(emulator["pid"]) != emulator["process"]:
+                    raise LabError("emulator_recovery_pending", "Unbooted emulator cannot be attributed to the session")
             self.stop_owned_process(emulator)
             wait_until(lambda: all(dev["serial"] != emulator["serial"] for dev in self.platform.devices(strict=True)),
                        15, "Managed emulator still appears in ADB inventory")

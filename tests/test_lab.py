@@ -109,11 +109,19 @@ class StateTests(unittest.TestCase):
 
     def test_safety_invalidation_persists(self):
         self.state.invalidate("phone")
-        self.assertEqual({"phone"}, State(self.home).invalidated())
+        self.assertEqual({"phone"}, set(State(self.home).invalidated()))
         with self.assertRaisesRegex(LabError, "latest invalidation"):
             self.state.accept_qualification("phone", time.time() - 1)
         self.state.accept_qualification("phone", time.time())
-        self.assertEqual(set(), self.state.invalidated())
+        self.assertIn("phone", self.state.invalidated())
+
+    def test_two_transports_share_a_lease_and_invalidation(self):
+        self.state.acquire(["physical:handset"], 60, {"transport": "usb"})
+        with self.assertRaises(LabError):
+            self.state.acquire(["physical:handset"], 60, {"transport": "wireless"})
+        self.state.invalidate("physical:handset")
+        with self.assertRaises(LabError):
+            self.state.accept_qualification("wireless", time.time() - 1, "physical:handset")
 
     def test_recovery_distinguishes_absent_backend_from_failure(self):
         broker = Broker(Config(self.home, {}))
@@ -164,7 +172,7 @@ class PolicyTests(unittest.TestCase):
             artifact = self.artifact | {"sha256": digest(apk)}
             data = {}
             device = DeviceSession(Mock(), Mock(), "session", data, work)
-            with patch.object(device, "check_transport"), patch.object(device, "installed", return_value=False):
+            with patch.object(device, "check_transport"), patch.object(device, "installed", return_value=False), patch.object(device, "cancelled", return_value=False):
                 with patch.object(device, "adb", return_value=(1, "Failure [INSTALL_FAILED_ALREADY_EXISTS]")) as adb:
                     with self.assertRaisesRegex(LabError, "INSTALL_FAILED_ALREADY_EXISTS"):
                         device.install(artifact, apk)
@@ -236,6 +244,29 @@ class DisplayTests(unittest.TestCase):
         result = parse_devices("List of devices attached\nprivate-id device product:x usb:abc transport_id:17\n")
         self.assertEqual("usb", result[0]["transport"])
         self.assertNotIn("private-id", result[0]["id"])
+
+    def test_recovery_rebinds_only_the_original_device_boot(self):
+        device = {"serial": "fixture", "transport_id": 2, "state": "device"}
+        route = {"device": device, "boot": "original"}
+        platform = Mock()
+        platform.devices.return_value = [device | {"transport_id": 19}]
+        platform.boot_identity.return_value = "original"
+        work = DeviceSession(platform, Mock(), "session", route, Path("."))
+        work.rebind_cleanup_transport()
+        self.assertEqual(19, route["device"]["transport_id"])
+        platform.boot_identity.return_value = "different"
+        with self.assertRaisesRegex(LabError, "Original device boot"):
+            work.rebind_cleanup_transport()
+
+    def test_partial_boot_process_is_recovered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            platform = Mock()
+            platform.devices.side_effect = [[{"serial": "emulator-5560"}], []]
+            broker = Broker(Config(Path(tmp), {}), platform)
+            owned = {"serial": "emulator-5560", "avd": "Fixture", "pid": 90, "process": "creation"}
+            with patch("android_lab.broker.process_identity", return_value="creation"), patch.object(broker, "stop_owned_process") as stop:
+                broker.reconcile("test", {"emulator": owned})
+                stop.assert_called_once_with(owned)
 
 
 class InterfaceTests(unittest.TestCase):

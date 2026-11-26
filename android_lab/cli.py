@@ -80,7 +80,7 @@ def qualification(broker, alias, evidence_file):
     entry["qualification"] = evidence
     entry["enabled"] = False
     json_write(config.home / "config.json", config.settings)
-    broker.state.accept_qualification(alias, observed)
+    broker.state.accept_qualification(alias, observed, "physical:" + identity["device_identity"])
     entry["enabled"] = True
     json_write(config.home / "config.json", config.settings)
     return {"device": alias, "capabilities": sorted(capabilities), "evidence": "operator_attested"}
@@ -150,8 +150,8 @@ def main(argv=None):
             return serve(broker)
         result = execute(broker, args)
         print(json.dumps(result, indent=2, ensure_ascii=True))
-        if args.command in ("run", "start") and isinstance(result, dict) and (result.get("execution") in ("failed", "blocked", "cancelled")
-                                         or result.get("cleanup") == "quarantined"):
+        if isinstance(result, dict) and (result.get("cleanup") == "quarantined" or
+                (args.command in ("run", "start") and result.get("execution") in ("failed", "blocked", "cancelled"))):
             return 2
         return 0
     except LabError as err:

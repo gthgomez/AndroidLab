@@ -94,6 +94,7 @@ def serve(broker, source=None, output=None):
                 elif method == "tools/call":
                     try:
                         name, arguments = params["name"], params.get("arguments", {})
+                        broker.reload_policy()
                         payload = invoke(broker, name, arguments)
                         if name == "lab_start" and "session_token" in payload:
                             sessions[payload["session"]] = payload["session_token"]

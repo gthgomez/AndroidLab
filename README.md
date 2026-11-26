@@ -78,3 +78,5 @@ android-lab run --project fixtures --suite negative
 ```
 
 The negative suite must return a functional failure with successful cleanup. Run `scripts/Install-AndroidLab.ps1 -Uninstall` from the same install source to remove the CLI and its PATH entry. Remove agent registration with the corresponding agent command. Local evidence and SDKs are preserved. [Apache-2.0](LICENSE)
+
+See the [verification record](docs/verification.md) for independently observed results and reproducible commands.

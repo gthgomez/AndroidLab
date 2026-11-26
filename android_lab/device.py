@@ -135,9 +135,12 @@ class DeviceSession:
 
     def check_lock(self):
         window = self.shell("dumpsys", "window", "policy")
-        awake = re.search(r"(?m)^\s*mAwake=true\b", window)
-        locked = re.findall(r"(?m)^\s*(?:mShowingLockscreen|isStatusBarKeyguard|isKeyguardShowing|showing)\s*=\s*(true|false)\b", window)
+        power = self.shell("dumpsys", "power")
+        awake = bool(re.search(r"(?m)^\s*mWakefulness\s*=\s*Awake\b", power))
+        locked = re.findall(r"(?m)^\s*(?:mShowingLockscreen|isStatusBarKeyguard|isKeyguardShowing|mIsShowing|showing)\s*=\s*(true|false)\b", window)
         if not awake or not locked or "true" in locked:
+            if self.rehearsal:
+                self.state.event(self.session, "rehearsal_lock", awake=awake, keyguard_observations=locked)
             raise LabError("lock_state", "Display power or lock state does not allow a personal session")
 
     def start_secondary(self, duration):
@@ -220,6 +223,10 @@ class DeviceSession:
         self.data.setdefault("packages", []).append(ownership)
         self.save()
         self.state.event(self.session, "operation_started", operation="install", package=package)
+        if self.cancelled():
+            self.data["packages"].remove(ownership)
+            self.save()
+            raise LabError("cancelled", "Session cancelled before package installation")
         code, output = self.adb("install", "-R", "--user", "0", "--no-streaming",
                                 *(["-t"] if artifact["instrumentation"] else []), staged, timeout=60, check=False)
         denied = re.search(r"\b(INSTALL_(?:FAILED|PARSE_FAILED)_[A-Z0-9_]+)\b", output)
@@ -285,6 +292,8 @@ class DeviceSession:
 
     def instrumentation(self, test, timeout):
         self.check_transport()
+        if self.cancelled():
+            raise LabError("cancelled", "Session cancelled before instrumentation")
         runner = test["instrumentation"][0]["runner"]
         self.state.event(self.session, "operation_started", operation="instrumentation")
         output = self.shell("am", "instrument", "--user", "0", "-w", "-r",

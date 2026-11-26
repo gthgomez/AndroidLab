@@ -152,14 +152,11 @@ class State:
                 (alias,),
             )
 
-    def accept_qualification(self, alias, observed):
-        with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT failures_since FROM invalidated WHERE alias = ?", (alias,)).fetchone()
-            if row is not None and observed <= row[0]:
-                raise LabError("stale_qualification", "Device requires qualification observed after the latest invalidation")
-            db.execute("DELETE FROM invalidated WHERE alias = ?", (alias,))
+    def accept_qualification(self, alias, observed, durable=None):
+        invalidated = self.invalidated()
+        if observed <= max(invalidated.get(alias, 0), invalidated.get(durable, 0)):
+            raise LabError("stale_qualification", "Device requires qualification observed after the latest invalidation")
 
     def invalidated(self):
         with self.connect() as db:
-            return {row["alias"] for row in db.execute("SELECT alias FROM invalidated")}
+            return {row["alias"]: row["failures_since"] for row in db.execute("SELECT * FROM invalidated")}

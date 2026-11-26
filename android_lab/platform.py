@@ -252,8 +252,9 @@ class Platform:
                                           "reason": None if healthy else "Device identity, qualification, or battery/thermal condition requires attention"})
                 results.append(dev | {"kind": mode, "api": identity["api"], "identity": identity, "ready": healthy,
                                       "capabilities": sorted(caps) if healthy else [],
+                                      "qualified_at": evidence.get("observed_unix", 0),
                                       "max_seconds": policy.get("max_seconds", 120),
-                                      "resources": [dev["id"]]})
+                                      "resources": ["physical:" + identity["device_identity"]]})
             except LabError as err:
                 presence.append(public | {"reason": str(err)})
         return results + list(avds.values()), presence

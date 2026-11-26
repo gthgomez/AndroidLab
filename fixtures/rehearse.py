@@ -69,12 +69,13 @@ def rehearse(avd_name):
             data.update(device=device, boot=platform.boot_identity(device), display=0, artifact=artifacts["primary"])
             work = DeviceSession(platform, broker.state, session, data, directory)
             work.save()
-            work.install(artifacts["primary"], paths["primary"])
-            work.launch(marker=marker)
             size = re.search(r"Physical size: (\d+)x(\d+)", work.shell("wm", "size"))
             if not size:
                 raise LabError("unknown_size", "AVD did not identify display dimensions")
-            primary_tap = ["input", "-d", "0", "tap", str(int(size[1]) // 2), str(int(size[2]) // 2)]
+            x_center, y_center = int(size[1]) // 2, int(size[2]) // 2
+            work.install(artifacts["primary"], paths["primary"])
+            work.launch(marker=marker)
+            primary_tap = ["input", "-d", "0", "tap", str(x_center), str(y_center)]
             work.placement()
             work.shell(*primary_tap, timeout=12)
             work.install(artifacts["automation"], paths["automation"])

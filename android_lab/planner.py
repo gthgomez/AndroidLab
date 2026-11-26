@@ -19,9 +19,10 @@ def choose(suite, inventory, host, leases, budget):
         return {"route": route, "device": device, **evidence}
 
     def host_ok(additional_memory):
+        needed = reserve + max(build_need, additional_memory)
         return (
-            host.get("free_mib", -1) >= build_need + additional_memory + reserve
-            and host.get("commit_free_mib", -1) >= build_need + additional_memory + reserve
+            host.get("free_mib", -1) >= needed
+            and host.get("commit_free_mib", -1) >= needed
             and host.get("cpu_percent", 101) < max_cpu
             and host.get("disk_mib", -1) >= budget("min_disk_mib", 2048)
             and (not building or ("build" not in leases and not host.get("busy_java", True)))
