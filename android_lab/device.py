@@ -149,7 +149,16 @@ class DeviceSession:
         if "feature:android.software.activities_on_secondary_displays" not in features:
             raise LabError("no_secondary_display", "Android did not advertise secondary-display activities")
         self.check_lock()
-        previous = display_counters(self.layout())
+        layout = self.layout()
+        previous = display_counters(layout)
+        if any(number != 0 and display_identity(layout, number) for number in previous):
+            raise LabError("display_in_use", "Another scrcpy display is already present")
+        for option in ("-e", "-L"):
+            code, _ = self.shell("test", option, "/data/local/tmp/scrcpy-server.jar", check=False)
+            if code != 1:
+                raise LabError("backend_in_use", "Existing or unreadable scrcpy server file; preserve it and stop the trial")
+        if self.cancelled():
+            raise LabError("cancelled", "Session cancelled before display creation")
         self.data["secondary"] = {"previous": sorted(previous), "pending": True}
         self.save()
         child = self.platform.begin_secondary(self.device, self.directory, duration,

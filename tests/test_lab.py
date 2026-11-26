@@ -13,7 +13,7 @@ from android_lab.cli import execute, parser
 from android_lab.common import LabError, digest, json_write
 from android_lab.config import Config
 from android_lab.device import DeviceSession, clean_ui, display_counters, display_identity, focused_package, resumed_packages
-from android_lab.mcp import invoke, serve
+from android_lab.mcp import Jobs, invoke, serve
 from android_lab.planner import EMULATOR, PERSONAL, choose
 from android_lab.platform import Platform, parse_devices
 from android_lab.project import Project
@@ -221,6 +221,17 @@ class DisplayTests(unittest.TestCase):
             with self.assertRaisesRegex(LabError, "unavailable"):
                 backend.devices(strict=True)
 
+    def test_secondary_creation_preserves_existing_remote_backend(self):
+        platform = Mock()
+        data = {"route": "personal", "device": {}, "required": []}
+        work = DeviceSession(platform, Mock(), "session", data, Path("."))
+        with patch.object(work, "check_transport"), patch.object(work, "check_lock"), patch.object(
+            work, "layout", return_value="Display 0:\n"
+        ), patch.object(work, "shell", side_effect=["feature:android.software.activities_on_secondary_displays", (0, "")]):
+            with self.assertRaisesRegex(LabError, "Existing or unreadable"):
+                work.start_secondary(60)
+        platform.begin_secondary.assert_not_called()
+
     def test_hierarchy_strips_foreign_nodes_and_rejects_wrong_app(self):
         raw = b'<hierarchy><node package="org.example.qa" text="marker"/><node package="android" text="foreign"/></hierarchy>'
         self.assertEqual([{"text": "marker"}], clean_ui(raw, "org.example.qa"))
@@ -270,6 +281,36 @@ class DisplayTests(unittest.TestCase):
 
 
 class InterfaceTests(unittest.TestCase):
+    def test_mcp_jobs_return_while_worker_runs_and_cancel_through_shared_state(self):
+        from threading import Event
+
+        with tempfile.TemporaryDirectory() as temp:
+            broker = Broker(Config(Path(temp), {}))
+            jobs = Jobs(broker)
+            self.addCleanup(jobs.close)
+            underway = Event()
+            finish = Event()
+
+            def pending(worker, path, suite, *, interactive, on_session):
+                session, _ = worker.state.acquire(["fixture"], 60, {})
+                on_session(session)
+                underway.set()
+                finish.wait(timeout=4)
+                self.assertTrue(worker.state.cancelled(session))
+                worker.state.release(session, True)
+                return {"execution": "cancelled", "cleanup": "complete"}
+
+            with patch.object(Broker, "start", pending):
+                try:
+                    receipt = jobs.submit("lab_run", {"project": "fixtures", "suite": "ui"})
+                    self.assertTrue(underway.wait(timeout=2))
+                    self.assertEqual("running", jobs.status(receipt["job"])["state"])
+                    self.assertEqual("cancellation_requested", jobs.cancel(receipt["job"])["state"])
+                finally:
+                    finish.set()
+                    jobs.pool.shutdown()
+                self.assertEqual("cancelled", jobs.status(receipt["job"])["result"]["execution"])
+
     def test_local_project_overrides_apply_to_run(self):
         import os
         with tempfile.TemporaryDirectory() as temp:

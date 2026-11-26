@@ -69,7 +69,7 @@ def operator_trial(alias, rehearsal_id):
             "planned_device": alias, "device": device, "boot": platform.boot_identity(device), "backend": backend,
             "display": 0, "execution": "started", "functional": "unverified", "safety": "unverified",
             "evidence": "partial", "cleanup": "pending"}
-    session, _ = broker.state.acquire(device["resources"], 180, data)
+    session, _ = broker.state.acquire(device["resources"], 260, data)
     directory = broker.directory(session)
     directory.mkdir(parents=True, exist_ok=True)
     work = DeviceSession(platform, broker.state, session, data, directory)
@@ -91,12 +91,19 @@ def operator_trial(alias, rehearsal_id):
             work.install(artifacts["primary"], paths["primary"])
             work.install(artifacts["automation"], paths["automation"])
             data["artifact"] = artifacts["automation"]
-            print("Canaries installed. Open Android Lab Primary and tap Increment repeatedly until asked to stop.", flush=True)
+            print("Canaries installed. Open Android Lab Primary Canary and tap Increment repeatedly until asked to stop.", flush=True)
+            primary_seen = False
 
             def primary_rows():
+                nonlocal primary_seen
                 code, output = work.shell("run-as", PACKAGES["primary"], "cat", "files/canary-events.jsonl", check=False)
                 if code:
+                    if "not debuggable" in output or "Permission denied" in output:
+                        raise LabError("canary_log_denied", "Android denied access to the synthetic canary log")
                     return []
+                if not primary_seen:
+                    broker.state.event(session, "primary_canary_log_available")
+                    primary_seen = True
                 if len(output.encode()) > 65536:
                     raise LabError("log_limit", "Synthetic evidence exceeded its bound")
                 return [row for row in map(json.loads, output.splitlines())
@@ -109,7 +116,8 @@ def operator_trial(alias, rehearsal_id):
                 rows = primary_rows()
                 return rows if active_primary(rows) and taps(rows) else None
 
-            beginning = wait_until(ready_primary, 60, "A focused primary canary with owner input was not observed", work.cancelled)
+            beginning = wait_until(ready_primary, 150, "A focused primary canary with owner input was not observed", work.cancelled)
+            broker.state.event(session, "primary_canary_input_observed")
 
             def check_primary():
                 rows = primary_rows()

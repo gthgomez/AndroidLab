@@ -14,7 +14,7 @@ babel mcp add android-lab python $runner mcp
 
 For Cursor add one entry at `mcpServers.android-lab` in the user's MCP configuration. Set `command` to the Python executable and `args` to the array described above. Enable that server only. Inspect the entry with `cursor-agent mcp list-tools android-lab`. See the [Cursor MCP guide](https://cursor.com/docs/mcp).
 
-Invoke `lab_doctor` and `lab_plan` in a fresh session as an integration check. Use `lab_run` or `lab_start` and `lab_step`. Use `lab_close` when finished. The owner may stop any session from the CLI. A stdio client can take time to learn the result of a running tool. Use the CLI cancel/recover path if the client exits or a device disconnects.
+Invoke `lab_doctor` and `lab_plan` in a fresh session as an integration check. `lab_run`, `lab_start`, `lab_step` and `lab_close` return a job ID promptly. Poll `lab_job` for the result. Resume polling with a short pause when it reports `running`. Use `lab_cancel_job` to stop an in-progress operation. Finish exploratory sessions with `lab_close`. The owner can also cancel a session or recover its resources through the CLI.
 
 Remove a registration with `codex mcp remove android-lab`, `babel mcp remove android-lab`, or by removing only the added Cursor entry. Keep unrelated MCP registrations intact.
 

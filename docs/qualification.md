@@ -16,7 +16,7 @@ An owner who is present can run the touch-only supervised trial after a passing 
 python fixtures/live_canary.py --device DEVICE_ALIAS --rehearsal SESSION_ID --supervised
 ```
 
-Open the synthetic primary canary manually on the phone when prompted. Tap Increment repeatedly while the check runs. The trial reads each fixture's own bounded event log, targets the secondary display, and removes the two fixture packages when complete. It leaves ordinary device enrollment disabled. Keyboard, sleep, disconnect and extended hardware qualification require their own evidence.
+Open the synthetic primary canary manually on the phone when prompted. Tap Increment repeatedly while the check runs. Keep other scrcpy sessions closed during the trial. The trial reads each fixture's own bounded event log, targets the secondary display, and removes the two fixture packages when complete. It leaves ordinary device enrollment disabled. Keyboard, sleep, disconnect and extended hardware qualification require their own evidence.
 
 ## Required observations
 

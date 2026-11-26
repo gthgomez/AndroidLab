@@ -90,7 +90,7 @@ class Broker:
                                 "suites": {**project.manifest.get("suites", {}), **local.get("suites", {})}}
         return project
 
-    def start(self, path, name, *, interactive=False):
+    def start(self, path, name, *, interactive=False, on_session=None):
         project = self.project(path)
         suite = project.suite(name)
         plan = self.plan(suite)
@@ -110,6 +110,8 @@ class Broker:
                 raise
             session, token = self.state.acquire([], suite["timeout"], data)
             return self.blocked(session, data, "A resource changed ownership during admission")
+        if on_session is not None:
+            on_session(session)
         directory = self.directory(session)
         directory.mkdir(parents=True, exist_ok=True)
         self.state.event(session, "planned", plan=data["plan"])
